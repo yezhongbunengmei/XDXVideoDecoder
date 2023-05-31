@@ -56,6 +56,8 @@ typedef struct {
 
 @implementation XDXVideoDecoder
 
+static int gIndex = 0;
+
 #pragma mark - Callback
 static void VideoDecoderCallback(void *decompressionOutputRefCon, void *sourceFrameRefCon, OSStatus status, VTDecodeInfoFlags infoFlags, CVImageBufferRef pixelBuffer, CMTime presentationTimeStamp, CMTime presentationDuration) {
     XDXDecodeVideoInfo *sourceRef = (XDXDecodeVideoInfo *)sourceFrameRefCon;
@@ -78,6 +80,27 @@ static void VideoDecoderCallback(void *decompressionOutputRefCon, void *sourceFr
     CMSampleBufferRef samplebuffer = [decoder createSampleBufferFromPixelbuffer:pixelBuffer
                                                                     videoRotate:sourceRef->rotate
                                                                      timingInfo:sampleTime];
+    
+    gIndex++;
+    if (gIndex < 10) {
+        NSData *yuv = [XDXVideoDecoder convertVideoSmapleBufferToYuvData:samplebuffer];
+        //把NSData对象写入到文件中,NSDataWritingAtomicb表示对象会先将数据写入临时文件，成功后再移动至指定文件
+        
+        NSArray *paths = [[NSFileManager defaultManager] URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask];
+        NSURL *documentsDirectoryURL = [paths lastObject];
+        NSURL *saveLocation;
+        saveLocation = [documentsDirectoryURL URLByAppendingPathComponent: [NSString stringWithFormat:@"%d.yuv", gIndex]];
+
+        NSLog(@"for # %d writing to file %@", gIndex, saveLocation);
+        NSError *error;
+        BOOL rs = [yuv writeToFile: [saveLocation path] options:NSDataWritingAtomic error:&error];
+        if (!rs) {
+            NSLog(@"write failed: %@", [error localizedDescription]);
+        } else {
+            NSLog(@"OK!!!!");
+        }
+    }
+    
     
     if (samplebuffer) {
         if ([decoder.delegate respondsToSelector:@selector(getVideoDecodeDataCallback:isFirstFrame:)]) {
@@ -102,6 +125,7 @@ static void VideoDecoderCallback(void *decompressionOutputRefCon, void *sourceFr
             .vps_size = 0, .sps_size = 0, .f_pps_size = 0, .r_pps_size = 0, .last_decode_pts = 0,
         };
         _isFirstFrame = YES;
+        gIndex = 0;
         pthread_mutex_init(&_decoder_lock, NULL);
     }
     return self;
@@ -540,5 +564,41 @@ static void VideoDecoderCallback(void *decompressionOutputRefCon, void *sourceFr
 - (void)resetTimestamp {
     _decoderInfo.last_decode_pts = 0;
 }
+
+// AWVideoEncoder.m文件
++(NSData *) convertVideoSmapleBufferToYuvData:(CMSampleBufferRef) videoSample{
+    // 获取yuv数据
+    // 通过CMSampleBufferGetImageBuffer方法，获得CVImageBufferRef。
+    // 这里面就包含了yuv420(NV12)数据的指针
+    CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(videoSample);
+    
+    //表示开始操作数据
+    CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+    
+    //图像宽度（像素）
+    size_t pixelWidth = CVPixelBufferGetWidth(pixelBuffer);
+    //图像高度（像素）
+    size_t pixelHeight = CVPixelBufferGetHeight(pixelBuffer);
+    //yuv中的y所占字节数
+    size_t y_size = pixelWidth * pixelHeight;
+    //yuv中的uv所占的字节数
+    size_t uv_size = y_size / 2;
+    
+    uint8_t *yuv_frame = (uint8_t *)av_malloc(uv_size + y_size);
+    
+    //获取CVImageBufferRef中的y数据
+    uint8_t *y_frame = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0);
+    memcpy(yuv_frame, y_frame, y_size);
+    
+    //获取CMVImageBufferRef中的uv数据
+    uint8_t *uv_frame = (uint8_t *)CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1);
+    memcpy(yuv_frame + y_size, uv_frame, uv_size);
+    
+    CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+    
+    //返回数据
+    return [NSData dataWithBytesNoCopy:yuv_frame length:y_size + uv_size];
+}
+
 
 @end
